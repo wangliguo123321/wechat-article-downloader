@@ -1,0 +1,19 @@
+# System
+.DS_Store
+.vscode/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# App Data
+articles_metadata.json
+downloads/
+WeChatArticles/
+*.log
+
+# Local config
+secrets.toml
