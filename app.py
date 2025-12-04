@@ -1,8 +1,11 @@
 import streamlit as st
 import os
 from wechat_scraper import WeChatScraper
-from auth_helper import login_and_get_tokens
+from wechat_scraper import WeChatScraper
+from auth_helper import login_and_get_tokens, save_credentials, load_credentials, clear_credentials
 import time
+import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="微信公众号文章下载工具", page_icon="⚡", layout="wide")
 
@@ -154,7 +157,7 @@ with st.sidebar:
     ### 🚀 快速开始
     1.  **登录**: 点击主界面的 **“扫码登录”** 按钮，在弹出的浏览器中扫码。
     2.  **配置**: 输入 **公众号名称** (如 "薪火传")。
-    3.  **格式**: 默认下载 HTML，可勾选 **PDF** 或 **Word**。
+    3.  **格式**: 默认下载 **Word（图文）**，可勾选 **PDF**。
     4.  **启动**: 点击 **“开始下载”**，程序将自动抓取并保存至 **下载** 文件夹。
     
     ### ⚠️ 注意事项
@@ -170,7 +173,17 @@ with main_col:
     st.markdown("---")
 
     # Session State Initialization
-    if 'cookie' not in st.session_state: st.session_state['cookie'] = ''
+    if 'cookie' not in st.session_state: 
+        # Try loading from cache
+        c, t = load_credentials()
+        if c and t:
+            st.session_state['cookie'] = c
+            st.session_state['token'] = t
+            st.toast("✅ 已自动登录")
+        else:
+            st.session_state['cookie'] = ''
+            st.session_state['token'] = ''
+            
     if 'token' not in st.session_state: st.session_state['token'] = ''
     # Hardcode base_dir to system Downloads folder
     st.session_state['base_dir'] = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -180,7 +193,8 @@ with main_col:
     if st.session_state['cookie'] and st.session_state['token']:
         # Logged In State
         st.success("✅ 已登录 | 凭证有效")
-        if st.button("🔄 切换账号 / 重新登录"):
+        if st.button("🔄 切换账号 / 退出登录"):
+            clear_credentials()
             st.session_state['cookie'] = ''
             st.session_state['token'] = ''
             st.rerun()
@@ -192,6 +206,7 @@ with main_col:
                 if cookie and token:
                     st.session_state['cookie'] = cookie
                     st.session_state['token'] = token
+                    save_credentials(cookie, token)
                     st.rerun()
                 else:
                     st.error(f"登录失败: {error_msg}")
@@ -206,16 +221,39 @@ with main_col:
 
     # Formats
     st.caption("选择导出格式:")
-    f1, f2, f3 = st.columns(3)
-    with f1: fmt_html = st.checkbox("HTML (网页)", value=True, disabled=True)
-    with f2: fmt_pdf = st.checkbox("PDF (打印版)", value=False, help="推荐！完美还原网页排版")
-    with f3: fmt_docx = st.checkbox("Word (纯文本)", value=False, help="仅提取文字，适合编辑")
+    f1, f2 = st.columns(2)
+    with f1: fmt_docx = st.checkbox("Word（图文）", value=True, help="推荐！包含文字和图片")
+    with f2: fmt_pdf = st.checkbox("PDF (打印版)", value=False, help="完美还原网页排版")
 
-    formats = ['html']
-    if fmt_pdf: formats.append('pdf')
+    formats = []
     if fmt_docx: formats.append('docx')
+    if fmt_pdf: formats.append('pdf')
 
     st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Date Range Selection
+    st.caption("选择时间范围:")
+    date_option = st.radio(
+        "时间范围",
+        ("最近一周", "最近一个月", "最近三个月", "历史全部"),
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    
+    today = datetime.date.today()
+    date_range = None
+    
+    if date_option == "最近一周":
+        start_date = today - datetime.timedelta(days=7)
+        date_range = (start_date, today)
+    elif date_option == "最近一个月":
+        start_date = today - datetime.timedelta(days=30)
+        date_range = (start_date, today)
+    elif date_option == "最近三个月":
+        start_date = today - datetime.timedelta(days=90)
+        date_range = (start_date, today)
+    else:
+        date_range = None # All history
 
     # --- 3. Action & Output ---
     if st.button("⚡ 开始下载", type="primary"):
@@ -265,7 +303,13 @@ with main_col:
             if fakeid:
                 # 2. Get Articles
                 status_text.info("正在获取文章列表...")
-                articles = scraper.get_articles(fakeid, update_log)
+                
+                # Handle date range input
+                search_date_range = None
+                if isinstance(date_range, tuple) and len(date_range) == 2:
+                    search_date_range = date_range
+                
+                articles = scraper.get_articles(fakeid, update_log, date_range=search_date_range)
                 
                 total = len(articles)
                 if total == 0:
@@ -273,21 +317,36 @@ with main_col:
                 else:
                     status_text.success(f"✅ 找到 {total} 篇，开始下载...")
                     
-                    # 3. Download
+                    # 3. Download (Multi-threaded)
                     downloaded_count = 0
                     skipped_count = 0
                     
-                    for i, article in enumerate(articles):
-                        status_text.text(f"正在处理 {i+1}/{total}: {article['title']}")
-                        progress_bar.progress((i + 1) / total)
+                    # Define a wrapper function for the executor
+                    def download_task(article):
+                        # Pass None as callback to avoid threading issues with Streamlit
+                        return scraper.save_article_content(article, target_dir, formats, callback=None)
+                    
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        # Submit all tasks
+                        future_to_article = {executor.submit(download_task, article): article for article in articles}
                         
-                        success = scraper.save_article_content(article, target_dir, formats, update_log)
-                        if success:
-                            downloaded_count += 1
-                        else:
-                            skipped_count += 1
-                        
-                        time.sleep(1) 
+                        for i, future in enumerate(as_completed(future_to_article)):
+                            article = future_to_article[future]
+                            try:
+                                success = future.result()
+                                if success:
+                                    downloaded_count += 1
+                                    update_log(f"⬇️ 下载成功: {article['title']}")
+                                else:
+                                    skipped_count += 1
+                                    update_log(f"⏭️ 跳过/失败: {article['title']}")
+                            except Exception as exc:
+                                update_log(f"⚠️ 下载出错 {article['title']}: {exc}")
+                                skipped_count += 1
+                                
+                            # Update progress
+                            status_text.text(f"正在处理 {i+1}/{total}: {article['title']}")
+                            progress_bar.progress((i + 1) / total) 
                     
                     st.balloons()
                     status_text.success(f"🎉 任务完成！下载: {downloaded_count}, 跳过: {skipped_count}")

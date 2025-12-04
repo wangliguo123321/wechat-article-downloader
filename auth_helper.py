@@ -1,5 +1,7 @@
 import time
 import os
+import json
+import base64
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
@@ -65,6 +67,60 @@ def login_and_get_tokens():
         error_msg = f"Error in auto-login: {str(e)}"
         print(error_msg)
         return None, None, error_msg
+
+AUTH_CACHE_FILE = ".auth_cache"
+
+def save_credentials(cookie, token):
+    """Save credentials to a local file."""
+    try:
+        data = {
+            "cookie": cookie,
+            "token": token,
+            "timestamp": time.time()
+        }
+        # Simple obfuscation (not real encryption, but better than plain text)
+        json_str = json.dumps(data)
+        encoded_str = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+        
+        with open(AUTH_CACHE_FILE, "w") as f:
+            f.write(encoded_str)
+        return True
+    except Exception as e:
+        print(f"Error saving credentials: {e}")
+        return False
+
+def load_credentials():
+    """Load credentials from local file."""
+    if not os.path.exists(AUTH_CACHE_FILE):
+        return None, None
+        
+    try:
+        with open(AUTH_CACHE_FILE, "r") as f:
+            encoded_str = f.read()
+            
+        json_str = base64.b64decode(encoded_str).decode('utf-8')
+        data = json.loads(json_str)
+        
+        # Optional: Check if expired (e.g., > 24 hours)
+        if time.time() - data.get("timestamp", 0) > 86400:
+            print("Credentials expired.")
+            return None, None
+            
+        return data.get("cookie"), data.get("token")
+    except Exception as e:
+        print(f"Error loading credentials: {e}")
+        return None, None
+
+def clear_credentials():
+    """Clear saved credentials."""
+    if os.path.exists(AUTH_CACHE_FILE):
+        try:
+            os.remove(AUTH_CACHE_FILE)
+            return True
+        except Exception as e:
+            print(f"Error clearing credentials: {e}")
+            return False
+    return True
 
 if __name__ == "__main__":
     # Test

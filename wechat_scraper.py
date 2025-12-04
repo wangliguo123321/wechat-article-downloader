@@ -7,6 +7,7 @@ import re
 import base64
 from datetime import datetime
 from bs4 import BeautifulSoup
+import threading
 from docx import Document
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -27,6 +28,7 @@ class WeChatScraper:
         # Initialize driver path once
         self.driver_path = self._get_driver_path()
         self.driver = None
+        self.driver_lock = threading.Lock()
 
     def _get_driver(self):
         if self.driver is None:
@@ -98,14 +100,19 @@ class WeChatScraper:
             self.log(f"Exception in get_fakeid: {e}", callback)
             return None
 
-    def get_articles(self, fakeid, callback=None):
-        """Fetch article list for the given fakeid."""
+    def get_articles(self, fakeid, callback=None, date_range=None):
+        """
+        Fetch article list for the given fakeid.
+        date_range: tuple (start_date, end_date) objects.
+        """
         url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
         articles = []
         page = 0
         MAX_PAGES_ESTIMATE = 40 
         
-        while True:
+        should_stop = False
+        
+        while not should_stop:
             self.log(f"Fetching page {page + 1}...", callback)
             params = {
                 "token": self.token,
@@ -146,6 +153,20 @@ class WeChatScraper:
                     create_time = datetime.fromtimestamp(msg['create_time'])
                     date_str = create_time.strftime('%Y-%m-%d')
                     
+                    # Date Filtering
+                    if date_range:
+                        start_date, end_date = date_range
+                        # Convert to date objects for comparison
+                        msg_date = create_time.date()
+                        
+                        if msg_date < start_date:
+                            self.log(f"Reached articles older than {start_date}. Stopping.", callback)
+                            should_stop = True
+                            break
+                        
+                        if msg_date > end_date:
+                            continue # Skip newer articles
+                    
                     article_info = {
                         "title": msg['title'],
                         "link": msg['link'],
@@ -155,6 +176,9 @@ class WeChatScraper:
                     }
                     articles.append(article_info)
                 
+                if should_stop:
+                    break
+                    
                 page += 1
                 
                 if page > MAX_PAGES_ESTIMATE:
@@ -173,31 +197,33 @@ class WeChatScraper:
 
     def _convert_html_to_pdf_selenium(self, html_path, pdf_path):
         """Convert HTML file to PDF using Selenium (Print to PDF)."""
-        driver = self._get_driver()
-        if not driver:
-            return False
-            
-        try:
-            driver.get(f"file://{os.path.abspath(html_path)}")
-            
-            print_params = {
-                "landscape": False,
-                "displayHeaderFooter": False,
-                "printBackground": True,
-                "preferCSSPageSize": True,
-            }
-            
-            result = driver.execute_cdp_cmd("Page.printToPDF", print_params)
-            
-            with open(pdf_path, 'wb') as f:
-                f.write(base64.b64decode(result['data']))
+        # Lock driver usage to ensure thread safety
+        with self.driver_lock:
+            driver = self._get_driver()
+            if not driver:
+                return False
                 
-            return True
-        except Exception as e:
-            print(f"Selenium PDF Error: {e}")
-            # If driver crashes, reset it
-            self.close_driver()
-            return False
+            try:
+                driver.get(f"file://{os.path.abspath(html_path)}")
+                
+                print_params = {
+                    "landscape": False,
+                    "displayHeaderFooter": False,
+                    "printBackground": True,
+                    "preferCSSPageSize": True,
+                }
+                
+                result = driver.execute_cdp_cmd("Page.printToPDF", print_params)
+                
+                with open(pdf_path, 'wb') as f:
+                    f.write(base64.b64decode(result['data']))
+                    
+                return True
+            except Exception as e:
+                print(f"Selenium PDF Error: {e}")
+                # If driver crashes, reset it
+                self.close_driver()
+                return False
 
     def save_article_content(self, article, base_dir, formats=['html'], callback=None):
         """Download and save the article content in specified formats."""
@@ -214,25 +240,69 @@ class WeChatScraper:
             if response.status_code != 200:
                 self.log(f"Failed to download {title}: Status {response.status_code}", callback)
                 return False
-            html_content = response.text
+            
+            # Process HTML for local viewing
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 1. Add no-referrer meta tag to bypass anti-hotlinking
+            meta_tag = soup.new_tag('meta', attrs={"name": "referrer", "content": "no-referrer"})
+            if soup.head:
+                soup.head.insert(0, meta_tag)
+            else:
+                # Create head if missing
+                head = soup.new_tag('head')
+                head.insert(0, meta_tag)
+                soup.insert(0, head)
+                
+            # 2. Fix lazy-loaded images (Embed as Base64)
+            for img in soup.find_all('img'):
+                img_url = img.get('data-src') or img.get('src')
+                if img_url:
+                    try:
+                        # Download image
+                        img_resp = requests.get(img_url, headers=self.headers, timeout=10)
+                        if img_resp.status_code == 200:
+                            b64_data = base64.b64encode(img_resp.content).decode('utf-8')
+                            
+                            # Determine mime type
+                            mime_type = "image/jpeg"
+                            if "png" in img_url: mime_type = "image/png"
+                            elif "gif" in img_url: mime_type = "image/gif"
+                            elif "svg" in img_url: mime_type = "image/svg+xml"
+                            
+                            img['src'] = f"data:{mime_type};base64,{b64_data}"
+                            
+                            # Remove data-src to prevent lazy loading scripts from messing it up
+                            if 'data-src' in img.attrs: del img['data-src']
+                    except Exception as e:
+                        # Fallback: just use the URL if download fails
+                        if 'data-src' in img.attrs:
+                            img['src'] = img['data-src']
+                        print(f"Failed to embed image: {e}")
+                    
+            html_content = str(soup)
+            
         except Exception as e:
             self.log(f"Error downloading {title}: {e}", callback)
             return False
 
         success = False
 
-        # 1. HTML (Always save first)
+        # 1. HTML (Save if requested or needed for PDF)
         save_dir_html = os.path.join(base_dir, "HTML")
-        if not os.path.exists(save_dir_html): os.makedirs(save_dir_html)
         html_filepath = os.path.join(save_dir_html, f"{filename_base}.html")
         
-        if not os.path.exists(html_filepath):
-            with open(html_filepath, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            if 'html' in formats: success = True
-        elif 'html' in formats:
-            self.log(f"Skip HTML (Exists): {filename_base}", callback)
-            success = True
+        # Only write HTML to disk if user wants it OR if we need it for PDF generation
+        if 'html' in formats or 'pdf' in formats:
+            if not os.path.exists(save_dir_html): os.makedirs(save_dir_html)
+            
+            if not os.path.exists(html_filepath):
+                with open(html_filepath, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                if 'html' in formats: success = True
+            elif 'html' in formats:
+                self.log(f"Skip HTML (Exists): {filename_base}", callback)
+                success = True
 
         # 2. PDF (Selenium)
         if 'pdf' in formats:
@@ -242,6 +312,11 @@ class WeChatScraper:
             
             if not os.path.exists(filepath):
                 try:
+                    # Ensure HTML exists for PDF generation
+                    if not os.path.exists(html_filepath):
+                         with open(html_filepath, 'w', encoding='utf-8') as f:
+                            f.write(html_content)
+
                     pdf_success = self._convert_html_to_pdf_selenium(html_filepath, filepath)
                     if pdf_success:
                         success = True
@@ -251,6 +326,16 @@ class WeChatScraper:
                     self.log(f"Error converting to PDF: {e}", callback)
             else:
                 self.log(f"Skip PDF (Exists): {filename_base}", callback)
+
+            # Cleanup HTML if not requested
+            if 'html' not in formats and os.path.exists(html_filepath):
+                try:
+                    os.remove(html_filepath)
+                    # Try to remove HTML dir if empty
+                    if not os.listdir(save_dir_html):
+                        os.rmdir(save_dir_html)
+                except:
+                    pass
 
         # 4. Word (Robust Text Extraction)
         if 'docx' in formats:
@@ -275,10 +360,22 @@ class WeChatScraper:
                                 try:
                                     img_url = element.get('data-src') or element.get('src')
                                     if img_url:
-                                        img_resp = requests.get(img_url, headers=self.headers)
-                                        if img_resp.status_code == 200:
-                                            img_stream = BytesIO(img_resp.content)
-                                            doc.add_picture(img_stream, width=Inches(5.5)) # Fit to page
+                                        # Handle Base64
+                                        if img_url.startswith('data:'):
+                                            try:
+                                                # Format: data:image/jpeg;base64,.....
+                                                header, encoded = img_url.split(',', 1)
+                                                img_data = base64.b64decode(encoded)
+                                                img_stream = BytesIO(img_data)
+                                                doc.add_picture(img_stream, width=Inches(5.5))
+                                            except Exception as e:
+                                                print(f"Error adding base64 image: {e}")
+                                        # Handle URL
+                                        else:
+                                            img_resp = requests.get(img_url, headers=self.headers, timeout=10)
+                                            if img_resp.status_code == 200:
+                                                img_stream = BytesIO(img_resp.content)
+                                                doc.add_picture(img_stream, width=Inches(5.5)) # Fit to page
                                 except Exception as e:
                                     print(f"Error adding image: {e}")
                             
@@ -297,10 +394,19 @@ class WeChatScraper:
                                     try:
                                         img_url = img.get('data-src') or img.get('src')
                                         if img_url:
-                                            img_resp = requests.get(img_url, headers=self.headers)
-                                            if img_resp.status_code == 200:
-                                                img_stream = BytesIO(img_resp.content)
-                                                doc.add_picture(img_stream, width=Inches(5.5))
+                                            if img_url.startswith('data:'):
+                                                try:
+                                                    header, encoded = img_url.split(',', 1)
+                                                    img_data = base64.b64decode(encoded)
+                                                    img_stream = BytesIO(img_data)
+                                                    doc.add_picture(img_stream, width=Inches(5.5))
+                                                except Exception as e:
+                                                    print(f"Error adding inline base64 image: {e}")
+                                            else:
+                                                img_resp = requests.get(img_url, headers=self.headers, timeout=10)
+                                                if img_resp.status_code == 200:
+                                                    img_stream = BytesIO(img_resp.content)
+                                                    doc.add_picture(img_stream, width=Inches(5.5))
                                     except Exception as e:
                                         print(f"Error adding inline image: {e}")
                     else:
