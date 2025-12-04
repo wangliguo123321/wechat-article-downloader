@@ -293,6 +293,9 @@ with main_col:
                     status_text.success(f"🎉 任务完成！下载: {downloaded_count}, 跳过: {skipped_count}")
                     st.info(f"📂 文件已保存至: {target_dir}")
                     
+                    # Cleanup
+                    scraper.close_driver()
+                    
             else:
                 st.error("❌ 未找到公众号，请检查名称或凭证。")
 

@@ -10,6 +10,10 @@ from bs4 import BeautifulSoup
 from docx import Document
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from docx.shared import Inches
+from io import BytesIO
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 class WeChatScraper:
@@ -22,6 +26,27 @@ class WeChatScraper:
         }
         # Initialize driver path once
         self.driver_path = self._get_driver_path()
+        self.driver = None
+
+    def _get_driver(self):
+        if self.driver is None:
+            options = webdriver.ChromeOptions()
+            options.add_argument('--headless')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--no-sandbox')
+            try:
+                self.driver = webdriver.Chrome(service=Service(self.driver_path), options=options)
+            except Exception as e:
+                print(f"Error initializing driver: {e}")
+        return self.driver
+
+    def close_driver(self):
+        if self.driver:
+            try:
+                self.driver.quit()
+            except:
+                pass
+            self.driver = None
 
     def _get_driver_path(self):
         try:
@@ -148,14 +173,11 @@ class WeChatScraper:
 
     def _convert_html_to_pdf_selenium(self, html_path, pdf_path):
         """Convert HTML file to PDF using Selenium (Print to PDF)."""
-        options = webdriver.ChromeOptions()
-        options.add_argument('--headless')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--no-sandbox')
-        
-        driver = None
+        driver = self._get_driver()
+        if not driver:
+            return False
+            
         try:
-            driver = webdriver.Chrome(service=Service(self.driver_path), options=options)
             driver.get(f"file://{os.path.abspath(html_path)}")
             
             print_params = {
@@ -173,10 +195,9 @@ class WeChatScraper:
             return True
         except Exception as e:
             print(f"Selenium PDF Error: {e}")
+            # If driver crashes, reset it
+            self.close_driver()
             return False
-        finally:
-            if driver:
-                driver.quit()
 
     def save_article_content(self, article, base_dir, formats=['html'], callback=None):
         """Download and save the article content in specified formats."""
@@ -247,15 +268,41 @@ class WeChatScraper:
                     content_div = soup.find(id="js_content")
                     
                     if content_div:
-                        # Extract text paragraphs and headings
-                        for element in content_div.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                            text = element.get_text(strip=True)
-                            if text:
-                                if element.name.startswith('h'):
-                                    level = int(element.name[1])
-                                    doc.add_heading(text, level=level)
-                                else:
-                                    doc.add_paragraph(text)
+                        # Extract text paragraphs and headings and images
+                        for element in content_div.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img']):
+                            # Handle Images
+                            if element.name == 'img':
+                                try:
+                                    img_url = element.get('data-src') or element.get('src')
+                                    if img_url:
+                                        img_resp = requests.get(img_url, headers=self.headers)
+                                        if img_resp.status_code == 200:
+                                            img_stream = BytesIO(img_resp.content)
+                                            doc.add_picture(img_stream, width=Inches(5.5)) # Fit to page
+                                except Exception as e:
+                                    print(f"Error adding image: {e}")
+                            
+                            # Handle Text
+                            else:
+                                text = element.get_text(strip=True)
+                                if text:
+                                    if element.name.startswith('h'):
+                                        level = int(element.name[1])
+                                        doc.add_heading(text, level=level)
+                                    else:
+                                        doc.add_paragraph(text)
+                                        
+                                # Check for images inside paragraphs (common in WeChat)
+                                for img in element.find_all('img'):
+                                    try:
+                                        img_url = img.get('data-src') or img.get('src')
+                                        if img_url:
+                                            img_resp = requests.get(img_url, headers=self.headers)
+                                            if img_resp.status_code == 200:
+                                                img_stream = BytesIO(img_resp.content)
+                                                doc.add_picture(img_stream, width=Inches(5.5))
+                                    except Exception as e:
+                                        print(f"Error adding inline image: {e}")
                     else:
                         # Fallback if no js_content
                         doc.add_paragraph("无法解析文章内容结构，仅保存纯文本。")
