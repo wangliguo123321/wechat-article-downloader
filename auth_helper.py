@@ -12,6 +12,20 @@ from webdriver_manager.chrome import ChromeDriverManager
 # Constants
 AUTH_CACHE_FILE = ".auth_cache"
 
+def get_system_chrome_path():
+    """Detect system installed Chromium/Chrome path."""
+    paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    ]
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return None
+
 def init_login_driver():
     """
     Initializes Chrome in headless mode and navigates to the login page.
@@ -23,17 +37,44 @@ def init_login_driver():
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
     
+    # Try to use system installed Chromium (common in Linux/Streamlit Cloud)
+    chrome_binary = get_system_chrome_path()
+    if chrome_binary:
+        print(f"Found system Chrome/Chromium at: {chrome_binary}")
+        options.binary_location = chrome_binary
+    
     try:
-        driver_path = ChromeDriverManager().install()
-        # Fix for webdriver_manager 4.x bug on Mac
-        if "THIRD_PARTY_NOTICES" in driver_path:
-            driver_path = os.path.join(os.path.dirname(driver_path), "chromedriver")
-            
-        os.chmod(driver_path, 0o755)
+        service = None
+        # On Linux/Streamlit Cloud, we often need to specify the matching driver manually or rely on system path
+        if chrome_binary and "/usr/bin" in chrome_binary:
+             # Assuming chromedriver is also in /usr/bin or /usr/lib/chromium-browser/chromedriver
+             # But usually Selenium Manager or standard system path handles it if we don't force a service.
+             # However, to be safe, we try standard webdriver_manager IF we are not sure.
+             # In Streamlit cloud, 'chromium-driver' package installs to /usr/bin/chromedriver usually.
+             if os.path.exists("/usr/bin/chromedriver"):
+                 service = Service("/usr/bin/chromedriver")
+                 print("Using system chromedriver at /usr/bin/chromedriver")
         
-        driver = webdriver.Chrome(service=Service(driver_path), options=options)
+        if not service:
+            try:
+                driver_path = ChromeDriverManager().install()
+                if "THIRD_PARTY_NOTICES" in driver_path:
+                    driver_path = os.path.join(os.path.dirname(driver_path), "chromedriver")
+                os.chmod(driver_path, 0o755)
+                service = Service(driver_path)
+            except Exception as e:
+                print(f"ChromeDriverManager failed: {e}. Trying default service...")
+                # If manager fails, try default (assuming in PATH)
+                pass
+
+        if service:
+            driver = webdriver.Chrome(service=service, options=options)
+        else:
+            driver = webdriver.Chrome(options=options)
+            
         driver.get("https://mp.weixin.qq.com/")
         return driver, None
     except Exception as e:

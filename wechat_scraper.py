@@ -30,36 +30,58 @@ class WeChatScraper:
         self.driver = None
         self.driver_lock = threading.Lock()
 
+    def _get_system_chrome_path(self):
+        paths = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _get_driver_path(self):
+        # We handle driver path in _get_driver logic now mostly, but kept for compatibility
+        return None 
+
     def _get_driver(self):
         if self.driver is None:
             options = webdriver.ChromeOptions()
             options.add_argument('--headless')
             options.add_argument('--disable-gpu')
             options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            
+            binary = self._get_system_chrome_path()
+            if binary:
+                options.binary_location = binary
+            
             try:
-                self.driver = webdriver.Chrome(service=Service(self.driver_path), options=options)
+                service = None
+                if binary and "/usr/bin" in binary and os.path.exists("/usr/bin/chromedriver"):
+                    service = Service("/usr/bin/chromedriver")
+                
+                if not service:       
+                    try:
+                        driver_path = ChromeDriverManager().install()
+                        if "THIRD_PARTY_NOTICES" in driver_path:
+                            driver_path = os.path.join(os.path.dirname(driver_path), "chromedriver")
+                        os.chmod(driver_path, 0o755)
+                        service = Service(driver_path)
+                    except:
+                        pass
+                
+                if service:
+                    self.driver = webdriver.Chrome(service=service, options=options)
+                else:
+                    self.driver = webdriver.Chrome(options=options)
+                    
             except Exception as e:
                 print(f"Error initializing driver: {e}")
         return self.driver
-
-    def close_driver(self):
-        if self.driver:
-            try:
-                self.driver.quit()
-            except:
-                pass
-            self.driver = None
-
-    def _get_driver_path(self):
-        try:
-            driver_path = ChromeDriverManager().install()
-            if "THIRD_PARTY_NOTICES" in driver_path:
-                driver_path = os.path.join(os.path.dirname(driver_path), "chromedriver")
-            os.chmod(driver_path, 0o755)
-            return driver_path
-        except Exception as e:
-            print(f"Error setting up driver: {e}")
-            return None
 
     def log(self, message, callback=None):
         if callback:
