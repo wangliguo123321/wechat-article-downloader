@@ -1,8 +1,7 @@
 import streamlit as st
 import os
 from wechat_scraper import WeChatScraper
-from wechat_scraper import WeChatScraper
-from auth_helper import login_and_get_tokens, save_credentials, load_credentials, clear_credentials
+from auth_helper import init_login_driver, get_login_qr, check_login_status, save_credentials, load_credentials, clear_credentials
 import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -206,16 +205,68 @@ with main_col:
             st.rerun()
     else:
         # Not Logged In State
-        if st.button("🚀 扫码登录", type="primary"):
-            with st.spinner("正在启动安全浏览器..."):
-                cookie, token, error_msg = login_and_get_tokens()
-                if cookie and token:
+        if 'login_driver' not in st.session_state: st.session_state['login_driver'] = None
+        
+        if not st.session_state['login_driver']:
+            if st.button("🚀 扫码登录", type="primary"):
+                with st.spinner("正在启动安全浏览器..."):
+                    driver, err = init_login_driver()
+                    if driver:
+                        st.session_state['login_driver'] = driver
+                        st.rerun()
+                    else:
+                        st.error(f"启动失败: {err}")
+        else:
+            # Driver is active, show QR Code and Poll
+            st.info("⚠️ 请使用微信扫描下方二维码登录 (请勿关闭此页面)")
+            
+            col_qr, col_info = st.columns([1, 2])
+            
+            with col_qr:
+                # Get QR Code
+                if 'qr_img' not in st.session_state:
+                     qr_b64, err = get_login_qr(st.session_state['login_driver'])
+                     if qr_b64:
+                         st.session_state['qr_img'] = qr_b64
+                     else:
+                         st.error(f"获取二维码失败: {err}")
+                
+                if 'qr_img' in st.session_state:
+                    st.image(base64.b64decode(st.session_state['qr_img']), caption="请用微信扫码", width=200)
+
+            with col_info:
+                st.write("### 正在等待登录...")
+                st.caption("扫码后请在手机上确认，程序会自动检测跳转。")
+                
+                # Polling mechanism using rerun
+                status_placeholder = st.empty()
+                status_placeholder.text(f"⏳ 正在检测登录状态 ({int(time.time()) % 60}s)...")
+                
+                success, cookie, token = check_login_status(st.session_state['login_driver'])
+                
+                if success:
+                    st.success("✅ 登录成功！正在跳转...")
+                    save_credentials(cookie, token)
                     st.session_state['cookie'] = cookie
                     st.session_state['token'] = token
-                    save_credentials(cookie, token)
+                    
+                    # Cleanup
+                    st.session_state['login_driver'].quit()
+                    st.session_state['login_driver'] = None
+                    if 'qr_img' in st.session_state: del st.session_state['qr_img']
+                    
+                    time.sleep(1)
                     st.rerun()
                 else:
-                    st.error(f"登录失败: {error_msg}")
+                    time.sleep(2)  # Wait 2 seconds before rerunning to poll again
+                    st.rerun()
+            
+            # Cancel Button
+            if st.button("取消登录"):
+                st.session_state['login_driver'].quit()
+                st.session_state['login_driver'] = None
+                if 'qr_img' in st.session_state: del st.session_state['qr_img']
+                st.rerun()
 
     st.markdown("---")
 

@@ -4,71 +4,99 @@ import json
 import base64
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-def login_and_get_tokens():
+# Constants
+AUTH_CACHE_FILE = ".auth_cache"
+
+def init_login_driver():
     """
-    Launches Chrome, waits for user to login to WeChat MP,
-    and returns (cookie_string, token).
+    Initializes Chrome in headless mode and navigates to the login page.
+    Returns the driver instance.
     """
-    print("Launching Browser for Login...")
+    print("Initializing Headless Browser for Login...")
     
     options = webdriver.ChromeOptions()
-    # options.add_argument('--headless') # Cannot be headless for QR scan
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--window-size=1920,1080')
     
     try:
         driver_path = ChromeDriverManager().install()
-        # Fix for webdriver_manager 4.x bug on Mac where it points to THIRD_PARTY_NOTICES
+        # Fix for webdriver_manager 4.x bug on Mac
         if "THIRD_PARTY_NOTICES" in driver_path:
             driver_path = os.path.join(os.path.dirname(driver_path), "chromedriver")
             
-        # Ensure it's executable
         os.chmod(driver_path, 0o755)
         
-        print(f"Driver path: {driver_path}")
         driver = webdriver.Chrome(service=Service(driver_path), options=options)
         driver.get("https://mp.weixin.qq.com/")
-        
-        print("Please scan the QR code to login in the browser window...")
-        
-        token = None
-        cookies_str = None
-        
-        # Wait for login (max 120 seconds)
-        for _ in range(120):
-            current_url = driver.current_url
-            if "token=" in current_url:
-                print("Login detected!")
-                
-                # Extract token from URL
-                try:
-                    token = current_url.split("token=")[1].split("&")[0]
-                except:
-                    pass
-                
-                # Extract cookies
-                selenium_cookies = driver.get_cookies()
-                cookie_parts = []
-                for cookie in selenium_cookies:
-                    cookie_parts.append(f"{cookie['name']}={cookie['value']}")
-                cookies_str = "; ".join(cookie_parts)
-                
-                break
-            time.sleep(1)
-            
-        driver.quit()
-        
-        if token and cookies_str:
-            return cookies_str, token, None
-        else:
-            return None, None, "Timeout: Login not detected within 120 seconds."
-            
+        return driver, None
     except Exception as e:
-        error_msg = f"Error in auto-login: {str(e)}"
-        print(error_msg)
-        return None, None, error_msg
+        return None, f"Error initializing driver: {str(e)}"
 
-AUTH_CACHE_FILE = ".auth_cache"
+def get_login_qr(driver):
+    """
+    Captures the login QR code from the driver.
+    Returns: base64_image_string, error_message
+    """
+    try:
+        # Wait for the QR code image to be present
+        # The QR code usually is an img with class 'login__type__container__scan__qrcode' or inside a specific container
+        # We will try to find the QR code image. If elusive, we screenshot a relevant area.
+        
+        # Strategy A: Screenshot the specific element (best UX)
+        # Using a generic wait for the main QR code container
+        wait = WebDriverWait(driver, 10)
+        qr_element = wait.until(
+            EC.presence_of_element_located((By.CLASS_NAME, "login__type__container__scan__qrcode")) 
+        )
+        
+        # Give it a moment to render fully
+        time.sleep(1)
+        
+        # Screenshot the element
+        base64_str = qr_element.screenshot_as_base64
+        return base64_str, None
+        
+    except Exception as e:
+        print(f"Failed to find specific QR code element: {e}")
+        # Strategy B: Fallback to full page screenshot
+        try:
+            return driver.get_screenshot_as_base64(), None
+        except Exception as e2:
+            return None, f"Error capturing QR code: {str(e2)}"
+
+def check_login_status(driver):
+    """
+    Checks if the driver has redirected to the logged-in page (has 'token' in URL).
+    Returns: (success, cookies_str, token)
+    """
+    try:
+        current_url = driver.current_url
+        if "token=" in current_url:
+            print("Login detected!")
+            
+            # Extract token
+            token = current_url.split("token=")[1].split("&")[0]
+            
+            # Extract cookies
+            selenium_cookies = driver.get_cookies()
+            cookie_parts = []
+            for cookie in selenium_cookies:
+                cookie_parts.append(f"{cookie['name']}={cookie['value']}")
+            cookies_str = "; ".join(cookie_parts)
+            
+            return True, cookies_str, token
+            
+        return False, None, None
+    except Exception as e:
+        print(f"Error checking login status: {e}")
+        return False, None, None
 
 def save_credentials(cookie, token):
     """Save credentials to a local file."""
@@ -78,7 +106,7 @@ def save_credentials(cookie, token):
             "token": token,
             "timestamp": time.time()
         }
-        # Simple obfuscation (not real encryption, but better than plain text)
+        # Simple obfuscation
         json_str = json.dumps(data)
         encoded_str = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
         
@@ -121,12 +149,3 @@ def clear_credentials():
             print(f"Error clearing credentials: {e}")
             return False
     return True
-
-if __name__ == "__main__":
-    # Test
-    c, t, e = login_and_get_tokens()
-    if e:
-        print(f"Failed: {e}")
-    else:
-        print(f"Cookie: {c}")
-        print(f"Token: {t}")
