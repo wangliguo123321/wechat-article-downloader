@@ -6,6 +6,8 @@ from auth_helper import login_and_get_tokens, save_credentials, load_credentials
 import time
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import tempfile
+import shutil
 
 st.set_page_config(page_title="微信公众号文章下载工具", page_icon="⚡", layout="wide")
 
@@ -185,8 +187,12 @@ with main_col:
             st.session_state['token'] = ''
             
     if 'token' not in st.session_state: st.session_state['token'] = ''
-    # Hardcode base_dir to system Downloads folder
-    st.session_state['base_dir'] = os.path.join(os.path.expanduser("~"), "Downloads")
+    
+    # Use temporary directory for downloads in serverless environment
+    if 'base_dir' not in st.session_state:
+        st.session_state['temp_dir_obj'] = tempfile.TemporaryDirectory()
+        st.session_state['base_dir'] = st.session_state['temp_dir_obj'].name
+    
     base_dir = st.session_state['base_dir']
 
     # --- 1. Login Section ---
@@ -350,7 +356,21 @@ with main_col:
                     
                     st.balloons()
                     status_text.success(f"🎉 任务完成！下载: {downloaded_count}, 跳过: {skipped_count}")
-                    st.info(f"📂 文件已保存至: {target_dir}")
+                    
+                    # Create ZIP file
+                    shutil.make_archive(os.path.join(base_dir, "articles"), 'zip', target_dir)
+                    zip_path = os.path.join(base_dir, "articles.zip")
+                    
+                    with open(zip_path, "rb") as f:
+                        st.download_button(
+                            label="📦 打包下载所有文章 (ZIP)",
+                            data=f,
+                            file_name=f"{account_name}_articles.zip",
+                            mime="application/zip",
+                            type="primary"
+                        )
+                    
+                    st.info(f"📂 文件临时保存于: {target_dir}")
                     
                     # Cleanup
                     scraper.close_driver()
