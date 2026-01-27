@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import base64
 from wechat_scraper import WeChatScraper
 from auth_helper import init_login_driver, get_login_qr, check_login_status, save_credentials, load_credentials, clear_credentials
 import time
@@ -433,10 +434,10 @@ with brand_col:
     # --- Branding (Right Column) ---
     st.caption("欢迎和开发者公众号交流：薪火传")
     if os.path.exists("assets/qr_account_new.jpg"):
-        st.image("assets/qr_account_new.jpg", use_column_width=True)
+        st.image("assets/qr_account_new.jpg", use_container_width=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
     
     st.caption("赞赏支持")
     if os.path.exists("assets/qr_pay.jpg"):
-        st.image("assets/qr_pay.jpg", use_column_width=True)
+        st.image("assets/qr_pay.jpg", use_container_width=True)
