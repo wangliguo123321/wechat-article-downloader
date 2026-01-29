@@ -3,6 +3,7 @@
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.32.0-ff4b4b)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://wechat-article-downloader.streamlit.app)
 
 一个基于 Python 和 Streamlit 开发的微信公众号文章批量下载工具。支持自动扫码登录、多格式导出（HTML/PDF/Word）、断点续传和可视化界面。
 
