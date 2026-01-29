@@ -5,7 +5,8 @@
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.32.0-ff4b4b)
 
-一个基于 Python 和 Streamlit 开发的微信公众号文章批量下载工具。支持自动扫码登录、多格式导出（HTML/PDF/Word）、断点续传和可视化界面。
+一个基于 Python 和 Streamlit 开发的微信公众号文章批量下载工具。支持自动扫码登录、多格式导出（PDF/Word）、断点续传和可视化界面。
+**🔥 在线体验地址**: [wechat-article-downloader.streamlit.app](https://wechat-article-downloader.streamlit.app)
 
 ## ✨ 功能亮点
 
@@ -21,7 +22,7 @@
 *   **📝 多格式导出**:
     *   **Word (图文)**: 推荐格式！完美保留文章中的文字和图片，适合离线阅读和编辑。
     *   **PDF**: 完美还原网页排版（基于 Chrome 打印技术）。
-    *   **HTML**: 仅作为中间格式（可自动清理），保持下载目录整洁。
+    *   **PDF**: 完美还原网页排版（基于 Chrome 打印技术）。
 *   **🛡️ 稳定防封**: 内置频率控制，触发微信限制时自动暂停保护账号。
 
 ## 🛠️ 安装与使用
